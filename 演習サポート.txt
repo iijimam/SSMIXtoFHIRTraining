@@ -1,0 +1,356 @@
+◇◇◇◇◇◇◇◇◇◇◇◇◇◇◇◇◇◇◇◇
+
+　　SSMIX2からFHIRリソースへの変換
+　　演習サポート
+　　（2021/10/12　作成）
+
+◇◇◇◇◇◇◇◇◇◇◇◇◇◇◇◇◇◇◇◇
+
+==================================
+演習資料 P12 PatientリソースのGET要求
+==================================
+
+Method		GETを指定
+URL		http://localhost:52773/csp/healthshare/fhirserver/fhir/r4/Patient
+HeadersのKEY	Accept
+Headers のVALUE	application/fhir+json
+
+※ご利用環境のポート番号が異なる場合は環境に合わせて変更してください
+
+
+
+==================================
+演習資料 P13 プロダクションの作成
+==================================
+
+パッケージ名			：SSMIX2toFHIR
+プロダクション名（クラス名）	：Production
+
+
+
+==================================
+演習資料 P16
+ビジネス・プロセス：HS.FHIR.DTL.Util.HC.SDA3.FHIR.Processの設定
+==================================
+
+ターゲット構成名	：HS.FHIRServer.Interop.Operation
+FHIRMetadataSet		：HL7v40 / FHIR R4 Core Specification
+FHIREndpoint		：/csp/healthshare/fhirserver/fhir/r4
+
+
+
+
+==================================
+演習資料 P21～
+標準HL7v2からSDAに変換を行うプロセス：SSMIX2toFHIR.BP.HL7toSDAの作成
+==================================
+パッケージ名	：SSMIX2toFHIR.BP
+クラス名	：HL7toSDA
+
+
+〇　Methodシグニチャの変更（引数のタイプ変更）
+Method OnRequest(pRequest As EnsLib.HL7.Message, Output pResponse As HS.Message.XMLMessage) As %Status
+
+
+〇　OnRequest()の中身全体
+
+Method OnRequest(pRequest As EnsLib.HL7.Message, Output pResponse As HS.Message.XMLMessage) As %Status
+{
+	#dim ex As %Exception.AbstractException
+	set tSC=$$$OK
+	try {
+		set tSC = ##class(HS.Gateway.HL7.HL7ToSDA3).GetSDA(pRequest, .tSDAxmlStream)
+		//変換結果のストリームのポジションを先頭に移動
+		do tSDAxmlStream.Rewind()
+		
+		//応答メッセージの作成
+		set pResponse=##class(HS.Message.XMLMessage).%New()
+		
+		//QuickStreamのインスタンスを生成
+		set quickStream=##Class(HS.SDA3.QuickStream).%New()
+		//QuickStreamのIDを取得
+		set streamid=quickStream.%Id()
+		//変換結果のSDAのストリームをQuickStreamにコピー
+		set tSC=quickStream.CopyFrom(tSDAxmlStream)
+		
+		//設定：TraceOperations で *FULL* を設定した時に出力したいトレースメッセージを指定できます
+		$$$HSTRACE("HL7v2->SDA変換後", "quickStream", quickStream)
+		
+		//応答メッセージのAdditionalInfoにstreamidをキー：QuickStreamIdを指定して設定
+		set tSC=pResponse.AdditionalInfo.SetAt(streamid,"QuickStreamId")
+		//応答メッセージのNameプロパティを設定
+		set pResponse.Name="SDAStream"
+	}
+	catch ex {
+		//例外のインスタンスから%Statusに変換
+		set tSC=ex.AsStatus()
+	}
+	return tSC
+}
+
+
+
+==================================
+演習資料 P26～
+一連の変換処理の呼び出しを行うプロセス：SSMIX2toFHIR.BP.SSMIX2toFHIRBPL
+==================================
+パッケージ名	：SSMIX2toFHIR.BP
+プロセス名	：SSMIX2toFHIRBPL
+
+
+〇コンテキストタブのリクエスト・クラス	：EnsLib.HL7.Message
+
+
+〇コンテキストタブのプロパティ
+
+プロパティ名	：タイプ
+MessageType	：%String(MAXLEN=50)
+SDAStream	：HS.Message.XMLMessage
+PatientRequest	：HS.FHIRServer.Interop.Request
+PatientResponse	：HS.FHIRServer.Interop.Response
+PatientResourceId	：%String(MAXLEN=50)
+
+
+
+〇　メッセージタイプがADT_A08以外の時、FHIRリポジトリに
+　PatientリソースのGET要求を行う<code>アクティビティの中身
+
+ set preq=##class(HS.FHIRServer.Interop.Request).%New()
+ set preq.Request.RequestMethod="GET"
+ set preq.Request.RequestPath="Patient"
+ set preq.Request.QueryString="identifier=|"_request.FindSegment("PID").GetValueAt("3(1).1")
+ 
+ set preq.Request.RequestFormatCode="JSON"
+ set preq.Request.ResponseFormatCode="JSON"
+ 
+ set preq.Request.SessionApplication="/csp/healthshare/fhirserver/fhir/r4"
+ 
+ set context.PatientRequest=preq
+
+
+〇　PatientリソースのGET要求後のPatientのリソースIDの取り出し
+
+ //正常系だけ実装
+ if context.PatientResponse.Response.Status="200" {
+  //get QuickStream
+  set qs=##Class(HS.SDA3.QuickStream).%OpenId(context.PatientResponse.QuickStreamId)
+  //JSON DynamicObjectに変換
+  set json={}.%FromJSON(qs)
+  
+  //応答のresourceの数をチェック
+  if json.total>1 {
+   set infostr="患者ID="_request.FindSegment("PID").GetValueAt("3(1).1")_"は複数のPatient Resourceが存在します"
+   $$$LOGINFO(infostr)
+  }
+  elseif json.total'=0 {
+   set context.PatientResourceId=json.entry.%Get(0).resource.id
+  }
+ }
+ else {
+  $$$LOGERROR("FHIR Response Status="_context.PatientResponse.Response.Status)
+ }
+
+
+
+
+==================================
+演習資料 P40～
+PatientリソースとAllergyIntoleranceのGET要求
+==================================
+〇　PatientリソースのGET
+Method	GET
+URL	http://localhost:52773/csp/healthshare/fhirserver/fhir/r4/Patient/2/$everything
+HeadersのKEY	：Accept
+Headers のVALUE	：application/fhir+json
+
+
+〇　AllergyIntoleranceリソースのGET
+Method	GET
+URL	http://localhost:52773/csp/healthshare/fhirserver/fhir/r4/AllergyIntolerance?patient=2
+HeadersのKEY	：Accept
+Headers のVALUE	：application/fhir+json
+
+
+
+
+==================================
+演習資料 P47～
+SSMIX2:ADT_A01から2.5.1:ADT_A01のデータ変換
+==================================
+
+〇　Ifアクションの条件
+source.{PV1:VisitNumber}=""
+
+
+〇　target.{PV1:VisitNumber}　の設定
+source.{EVN:EventFacility.NamespaceID}_"_"_source.{PID:PatientIdentifierList().IDNumber}_"_"_source.{PV1:AdmitDateTime.Time}
+
+
+
+==================================
+演習資料 P50～
+SSMIX2から標準HL7v2の変換処理をまとめたプロセス：SSMIX2toFHIR.BP.ConvertSSMIX2の作成
+==================================
+
+パッケージ名	SSMIX2toFHIR.BP
+クラス名	ConvertSSMIX2
+
+
+〇　OnRequest()全体
+
+Method OnRequest(pRequest As EnsLib.HL7.Message, Output pResponse As EnsLib.HL7.Message) As %Status
+{
+	#dim ex As %Exception.AbstractException
+	set tSC=$$$OK
+	try {
+		set tSC = ..ConvertSSMIXMessage(pRequest,.tConvertedHL7msg)	
+		$$$ThrowOnError(tSC)
+		set pResponse = tConvertedHL7msg
+	}
+	catch ex {
+		set tSC=ex.AsStatus()
+	}
+	return tSC
+}
+
+〇　ConvertSSMIXMessage()全体
+Method ConvertSSMIXMessage(pRequest As EnsLib.HL7.Message, Output pResponse As EnsLib.HL7.Message) As %Status
+{
+	set tSC=$$$OK
+
+	if pRequest.Name="ADT_A01" {
+		Set tSC=##class(SSMIX.DTL.ADTA01DTL).Transform(pRequest,.pResponse)
+	}
+	return tSC
+}
+
+
+
+
+
+==================================
+演習資料 P58～
+HL7→SDAの変換ロジックをカスタマイズ（SSMIX2toFHIR.Gateway.HL7.HL7ToSDA3）
+==================================
+
+〇　スーパークラス名：　HS.Gateway.HL7.HL7ToSDA3
+
+〇　OnPatient()コード全体
+ClassMethod OnPatient()
+{
+	if $$$PIDPatientNameCodeType(2)'="" {
+		do ..write(cr_"<Aliases>")	 
+			do ..write(cr_"<Name>")
+			do ..write(cr_"<GivenName>"_$$$PIDPatientNameGivenName(2)_"</GivenName>")
+			do ..write(cr_"<FamilyName>"_$$$PIDPatientNameFamilyNameSurname(2)_"</FamilyName>")
+			do ..write(cr_"</Name>")
+	 	do ..write(cr_"</Aliases>")		
+	}
+}
+
+
+
+==================================
+演習資料 P61～
+プロセス：SSMIX2toFHIR.BP.HL7toSDAの修正
+==================================
+
+〇　以下コメント
+set tSC = ##class(HS.Gateway.HL7.HL7ToSDA3).GetSDA(pRequest, .tSDAxmlStream)
+
+〇　以下追記
+set tSC = ##class(SSMIX2toFHIR.Gateway.HL7.HL7ToSDA3).GetSDA(pRequest, .tSDAxmlStream)
+
+
+
+==================================
+演習資料 P66～
+SDA-FHIRのカスタムデータ変換クラスの設定
+==================================
+
+USER>set $namespace="FHIRSERVER"
+ 
+FHIRSERVER>write ##class(HS.FHIR.DTL.Util.API.ExecDefinition).GetCustomDTLPackage()
+ 
+FHIRSERVER>set status=##class(HS.FHIR.DTL.Util.API.ExecDefinition).SetCustomDTLPackage("SSMIX2toFHIR.FHIR.DTL")
+ 
+FHIRSERVER>write status
+1
+FHIRSERVER>write ##class(HS.FHIR.DTL.Util.API.ExecDefinition).PreviewDTLCustomClass("HS.FHIR.DTL.SDA3.vR4.Name.HumanName")
+SSMIX2toFHIR.FHIR.DTL.SDA3.vR4.Name.HumanName
+FHIRSERVER>
+
+
+==================================
+演習資料 P68～
+クラス：SSMIX2toFHIR.FHIR.DTL.SDA3.vR4.Name.HumanName の修正
+==================================
+
+<comment>
+<annotation>SSMIX2toFHIRカスタマイズ開始</annotation>
+</comment>
+<!-- 演習：変換から削除したい内容のため、コメント化します
+<if condition='value&apos;=""' >
+<true>
+<assign value='value' property='target.text' action='set' >
+<annotation> Text representation of the full name </annotation>
+</assign>
+</true>
+</if>
+-->
+<assign value='target.extension.Count()+1' property='index' action='set' />
+<assign value='##class(HS.FHIR.DTL.vR4.Model.Base.Extension).%New()' property='tmp' action='set' />
+<if condition='tmp&apos;=""' >
+<true>
+<assign value='"http://hl7.org/fhir/StructureDefinition/iso21090-EN-representation"' property='tmp.url' action='set' />
+<!-- 
+	氏名か氏名カナかの区別ができるようにPatientから呼び出されるときにデータ変換末尾の引数（aux）を使用します。
+	valueCodeに aux("Aliases")=1なら、SYL　それ以外なら IDE を割り当てます。
+-->
+<if condition='$get(aux("Aliases"))=1' >
+<true>
+<assign value='"SYL"' property='tmp.valueCode' action='set' />
+</true>
+<false>
+<assign value='"IDE"' property='tmp.valueCode' action='set' />
+</false>
+</if>
+<assign value='""' property='tmp.valueString' action='set' />
+<assign value='tmp' property='target.extension' action='set' key='index' />
+</true>
+</if>
+
+<comment>
+<annotation>SSMIX2toFHIRカスタマイズ終了</annotation>
+</comment>
+
+
+
+
+==================================
+演習資料 P71～
+クラス：SSMIX2toFHIR.FHIR.DTL.SDA3.vR4.Patient.Patient の修正
+==================================
+
+<assign value='target.name.Count()+1' property='index' action='set' />
+<comment>
+<annotation>SSMIX2toFHIRカスタマイズ開始 - HumanNameのDTLにAliases（カナ）の変換であることを知らせる</annotation>
+</comment>
+<assign value='1' property='aux("Aliases")' action='set' />
+<comment>
+<annotation>SSMIX2toFHIRカスタマイズ終了</annotation>
+</comment>
+
+
+<comment>
+<annotation>SSMIX2toFHIRカスタマイズ開始 - aux("Aliases")の初期化</annotation>
+</comment>
+<assign value='""' property='aux("Aliases")' action='set' />
+<comment>
+<annotation>SSMIX2toFHIRカスタマイズ終了</annotation>
+</comment>
+
+
+
+
+

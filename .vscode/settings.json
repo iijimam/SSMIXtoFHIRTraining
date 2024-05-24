@@ -1,0 +1,17 @@
+{
+    "objectscript.conn": {
+        "active": true,
+        "server": "ssmix",
+        "ns": "FHIRSERVER"
+    },
+    "intersystems.servers": {
+        "ssmix":{
+            "webServer": {
+                "host": "127.0.0.1",
+                "port":8083,
+                "scheme": "http",
+            },
+            "username": "SuperUser"
+        }
+    }
+}
